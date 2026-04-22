@@ -6,6 +6,8 @@ import os
 import json
 from fastapi import WebSocket
 import asyncio
+from fastapi import WebSocket, WebSocketDisconnect
+import json
 
 # Load environment variables
 load_dotenv()
@@ -26,6 +28,7 @@ app.add_middleware(
 
 log_history = []
 
+
 def detect_patterns(logs):
     error_count = sum(1 for log in logs if "ERROR" in log)
     warning_count = sum(1 for log in logs if "WARNING" in log)
@@ -40,8 +43,9 @@ def detect_patterns(logs):
     return {
         "error_count": error_count,
         "warning_count": warning_count,
-        "prediction": prediction
+        "prediction": prediction,
     }
+
 
 @app.get("/")
 def home():
@@ -85,7 +89,7 @@ Logs:
                 "errors": [],
                 "root_cause": "Could not parse AI response",
                 "severity": "Medium",
-                "suggestions": [content]
+                "suggestions": [content],
             }
 
         return parsed
@@ -95,8 +99,9 @@ Logs:
             "errors": ["Internal server error"],
             "root_cause": str(e),
             "severity": "High",
-            "suggestions": ["Check backend logs"]
+            "suggestions": ["Check backend logs"],
         }
+
 
 @app.websocket("/ws/logs")
 async def websocket_logs(websocket: WebSocket):
@@ -104,18 +109,23 @@ async def websocket_logs(websocket: WebSocket):
 
     try:
         while True:
-            data = await websocket.receive_text()
+            try:
+                data = await websocket.receive_text()
+            except WebSocketDisconnect:
+                print("Client disconnected while receiving")
+                break
 
             # Store logs
             log_history.append(data)
 
-            # Keep last 20 logs only
             if len(log_history) > 20:
                 log_history.pop(0)
 
             pattern_result = detect_patterns(log_history)
 
-            prompt = f"""
+            # ---- AI CALL ----
+            try:
+                prompt = f"""
 You are an SRE expert.
 
 Analyze logs and return JSON:
@@ -131,21 +141,30 @@ Logs:
 {data}
 """
 
-            response = client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": prompt}],
-            )
+                response = client.chat.completions.create(
+                    model="gpt-4.1-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                )
 
-            ai_content = response.choices[0].message.content
+                ai_content = response.choices[0].message.content
 
-            try:
-                ai_json = json.loads(ai_content)
-            except:
+                try:
+                    ai_json = json.loads(ai_content)
+                except json.JSONDecodeError:
+                    ai_json = {
+                        "errors": [],
+                        "root_cause": "Parsing error",
+                        "severity": "Medium",
+                        "suggestions": [],
+                    }
+
+            except Exception as e:
+                print("AI error:", e)
                 ai_json = {
-                    "errors": [],
-                    "root_cause": "Parsing error",
-                    "severity": "Medium",
-                    "suggestions": []
+                    "errors": ["AI processing failed"],
+                    "root_cause": str(e),
+                    "severity": "High",
+                    "suggestions": ["Check API or logs"],
                 }
 
             # Merge AI + pattern detection
@@ -154,7 +173,18 @@ Logs:
                 "metrics": pattern_result
             }
 
-            await websocket.send_text(json.dumps(final_output))
+            # ---- SAFE SEND ----
+            try:
+                await websocket.send_text(json.dumps(final_output))
+            except WebSocketDisconnect:
+                print("Client disconnected while sending")
+                break
+            except Exception as e:
+                print("Send error:", e)
+                break
 
-    except Exception:
-        await websocket.close()
+    except Exception as e:
+        print("Unexpected error:", e)
+
+    finally:
+        print("WebSocket connection closed safely")
