@@ -5,17 +5,23 @@ from utils.security import hash_password, verify_password, create_token
 
 router = APIRouter(prefix="/auth")
 
+
 @router.post("/register")
 def register(user: UserCreate):
-    if users_collection.find_one({"email": user.email}):
-        raise HTTPException(status_code=400, detail="User exists")
+    try:
+        if users_collection.find_one({"email": user.email}):
+            raise HTTPException(status_code=400, detail="User exists")
 
-    users_collection.insert_one({
-        "email": user.email,
-        "password": hash_password(user.password)
-    })
+        users_collection.insert_one(
+            {"email": user.email, "password": hash_password(user.password)}
+        )
 
-    return {"message": "User created"}
+        return {"message": "User created"}
+
+    except Exception as e:
+        print("REGISTER ERROR:", str(e))  # 👈 VERY IMPORTANT
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/login")
 def login(user: UserLogin):
