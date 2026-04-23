@@ -3,6 +3,8 @@ from jose import jwt
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import hashlib
+
 
 load_dotenv()
 
@@ -11,11 +13,21 @@ ALGORITHM = "HS256"
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+
 def hash_password(password: str):
+    # Normalize long passwords safely
+    if len(password.encode("utf-8")) > 72:
+        password = hashlib.sha256(password.encode()).hexdigest()
+
     return pwd_context.hash(password)
 
+
 def verify_password(password: str, hashed: str):
+    if len(password.encode("utf-8")) > 72:
+        password = hashlib.sha256(password.encode()).hexdigest()
+
     return pwd_context.verify(password, hashed)
+
 
 def create_token(data: dict):
     to_encode = data.copy()
