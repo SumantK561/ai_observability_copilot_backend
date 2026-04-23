@@ -8,3 +8,4 @@ pymongo
 passlib[bcrypt]
 python-jose
 email-validator
+pymongo[srv]
