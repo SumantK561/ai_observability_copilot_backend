@@ -4,3 +4,7 @@ python-multipart
 openai
 python-dotenv
 websockets
+pymongo
+passlib[bcrypt]
+python-jose
+email-validator

@@ -1,23 +1,16 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from dotenv import load_dotenv
+import json
 import os
-import json
-from fastapi import WebSocket
-import asyncio
-from fastapi import WebSocket, WebSocketDisconnect
-import json
 
-# Load environment variables
+from routes.auth import router as auth_router
+
 load_dotenv()
-
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI()
 
-# Enable CORS (for frontend)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,15 +19,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
+
 log_history = []
 
-
+# ------------------------
+# Pattern Detection
+# ------------------------
 def detect_patterns(logs):
     error_count = sum(1 for log in logs if "ERROR" in log)
     warning_count = sum(1 for log in logs if "WARNING" in log)
 
     prediction = "Stable"
-
     if error_count > 3:
         prediction = "High chance of failure"
     elif warning_count > 5:
@@ -46,27 +42,36 @@ def detect_patterns(logs):
         "prediction": prediction,
     }
 
-
+# ------------------------
+# Health Check
+# ------------------------
 @app.get("/")
 def home():
-    return {"message": "AI Observability Copilot Backend Running 🚀"}
+    return {"message": "Backend running 🚀"}
 
-
+# ------------------------
+# Analyze API
+# ------------------------
 @app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
+async def analyze(
+    file: UploadFile = File(...),
+    api_key: str = Form(...)
+):
     content = await file.read()
     logs = content.decode("utf-8")
 
-    prompt = f"""
-You are an expert SRE (Site Reliability Engineer).
+    client = OpenAI(api_key=api_key)
 
-Analyze the following logs and return STRICT JSON ONLY in this format:
+    prompt = f"""
+You are an SRE expert.
+
+Return STRICT JSON:
 
 {{
-  "errors": ["list of errors"],
-  "root_cause": "short explanation",
+  "errors": [],
+  "root_cause": "",
   "severity": "Low | Medium | High",
-  "suggestions": ["list of actionable fixes"]
+  "suggestions": []
 }}
 
 Logs:
@@ -81,76 +86,69 @@ Logs:
 
         content = response.choices[0].message.content.strip()
 
-        # Try parsing JSON safely
         try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            parsed = {
+            return json.loads(content)
+        except:
+            return {
                 "errors": [],
-                "root_cause": "Could not parse AI response",
+                "root_cause": "Parsing error",
                 "severity": "Medium",
                 "suggestions": [content],
             }
 
-        return parsed
-
     except Exception as e:
         return {
-            "errors": ["Internal server error"],
+            "errors": ["AI error"],
             "root_cause": str(e),
             "severity": "High",
-            "suggestions": ["Check backend logs"],
+            "suggestions": ["Check API key"],
         }
 
-
+# ------------------------
+# WebSocket
+# ------------------------
 @app.websocket("/ws/logs")
 async def websocket_logs(websocket: WebSocket):
     await websocket.accept()
+
+    user_api_key = None
 
     try:
         while True:
             try:
                 data = await websocket.receive_text()
             except WebSocketDisconnect:
-                print("Client disconnected while receiving")
+                print("Client disconnected")
                 break
 
-            # Store logs
-            log_history.append(data)
+            # Receive API key
+            if data.startswith("API_KEY:"):
+                user_api_key = data.replace("API_KEY:", "")
+                continue
 
+            if not user_api_key:
+                continue
+
+            log_history.append(data)
             if len(log_history) > 20:
                 log_history.pop(0)
 
-            pattern_result = detect_patterns(log_history)
+            pattern = detect_patterns(log_history)
 
-            # ---- AI CALL ----
+            # AI CALL (throttled)
             try:
-                prompt = f"""
-You are an SRE expert.
-
-Analyze logs and return JSON:
-
-{{
-  "errors": ["..."],
-  "root_cause": "...",
-  "severity": "Low | Medium | High",
-  "suggestions": ["..."]
-}}
-
-Logs:
-{data}
-"""
+                client = OpenAI(api_key=user_api_key)
 
                 response = client.chat.completions.create(
                     model="gpt-4.1-mini",
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": data}],
                 )
 
                 ai_content = response.choices[0].message.content
 
                 try:
                     ai_json = json.loads(ai_content)
-                except json.JSONDecodeError:
+                except:
                     ai_json = {
                         "errors": [],
                         "root_cause": "Parsing error",
@@ -159,32 +157,19 @@ Logs:
                     }
 
             except Exception as e:
-                print("AI error:", e)
                 ai_json = {
-                    "errors": ["AI processing failed"],
+                    "errors": ["AI failed"],
                     "root_cause": str(e),
                     "severity": "High",
-                    "suggestions": ["Check API or logs"],
+                    "suggestions": ["Check API key"],
                 }
 
-            # Merge AI + pattern detection
-            final_output = {
-                **ai_json,
-                "metrics": pattern_result
-            }
+            final_output = {**ai_json, "metrics": pattern}
 
-            # ---- SAFE SEND ----
             try:
                 await websocket.send_text(json.dumps(final_output))
-            except WebSocketDisconnect:
-                print("Client disconnected while sending")
+            except:
                 break
-            except Exception as e:
-                print("Send error:", e)
-                break
-
-    except Exception as e:
-        print("Unexpected error:", e)
 
     finally:
-        print("WebSocket connection closed safely")
+        print("WebSocket closed")
