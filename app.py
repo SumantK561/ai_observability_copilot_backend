@@ -15,7 +15,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "https://ai-observability-copilot-frontend.vercel.app"
+        "https://ai-observability-copilot-frontend.vercel.app",
+        "https://vercel.com/sumantk561s-projects/ai-observability-copilot-frontend/8No8dAgo8bXn98sTxLs8vhYs49YF",
     ],
     allow_credentials=True,
     allow_methods=["*"],
